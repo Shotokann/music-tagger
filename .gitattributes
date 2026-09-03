@@ -1,0 +1,5 @@
+# Preserve historical trailing whitespace in frozen pre-Python references.
+legacy/Music-TagEditor.ps1 whitespace=-blank-at-eol
+legacy/Restore-UnicodeFilenames-MusicBrainz-v2.ps1 whitespace=-blank-at-eol
+legacy/Restore-UnicodeFilenames-MusicBrainz-v3.ps1 whitespace=-blank-at-eol
+legacy/music_tag_editor_v5.pl whitespace=-blank-at-eol

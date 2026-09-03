@@ -1,0 +1,20 @@
+# generated from the real library; archived runs live under data/runs/
+data/
+anomalies.csv
+dry-run-*.txt
+test-parse.txt
+script-output.txt
+connection-errors.csv
+
+# local secrets and machine config
+.env
+.claude/settings.local.json
+# Public-facing documentation goes directly in docs/ instead.
+docs/internal/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
