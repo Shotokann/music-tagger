@@ -65,7 +65,7 @@ Focused pytest tests live under `tests/`; no coverage threshold is configured. N
 
 ## Commit & Pull Request Guidelines
 
-Git history is unavailable in this checkout, so no repository-specific commit convention can be confirmed. Use short, imperative subjects such as `Handle multi-disc album filenames`. Keep commits scoped to one behavior. Pull requests should describe affected stages, sample inputs, validation commands, and dry-run results; call out tag or rename behavior and include redacted report excerpts when useful.
+Never commit directly to `main`. Every change, including doc-only edits, goes on a topic branch (`git switch -c <topic>`) and reaches `main` through a pull request. Use short, imperative subjects such as `Handle multi-disc album filenames`. Keep commits scoped to one behavior. Pull requests should describe affected stages, sample inputs, validation commands, and dry-run results; call out tag or rename behavior and include redacted report excerpts when useful.
 
 ## Security & Configuration
 
