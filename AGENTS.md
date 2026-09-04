@@ -23,7 +23,7 @@ python -m pipeline.stage4_validate
 python -m pipeline.stage5_execute --dry-run
 ```
 
-Review `data/validation_report.txt`, `approved_plan.json`, and the dry-run output before using `python -m pipeline.stage5_execute --apply`. Use `--rollback` only with a verified `backup_manifest.json`. `python -m pipeline.fix_tags` previews standalone fixes; add `--apply` only after review.
+Review `data/validation_report.txt`, `approved_plan.json`, and the dry-run output before using `python -m pipeline.stage5_execute --apply`. Use `--rollback --run-id <id>` only with the run ID printed by Stage 5 and preview it with `--dry-run` first. `python -m pipeline.fix_tags` previews standalone fixes; add `--apply` only after review.
 
 - Each stage also works as a script because it prepends its grandparent dir to `sys.path`; module form and script form are equivalent.
 - Only Stage 5 and `fix_tags.py` take CLI flags. Stages 0–4 have none. Stage 1 resumes automatically from an existing `resolved.json`, and Stage 2 fingerprints only anomaly/not-found albums. To force a full re-resolve, delete `data/resolved.json`.
@@ -40,7 +40,7 @@ Every stage is a pure function of the JSON files in `data/`, so the contract bet
 | 2 fingerprint | `resolved.json`, `inventory.json` | `fingerprints.json` | Only albums with status `anomaly` or `not_found`. Runs `fpcalc` then AcoustID. |
 | 3 plan | all three above | `change_plan.json` | Per-file `confidence`, `source`, `tag_changes`, `rename`, `has_changes`. |
 | 4 validate | `change_plan.json` | `validation_report.txt`, `approved_plan.json` | Sets `approved` per file. |
-| 5 execute | `approved_plan.json` | `execution_log.json`, `backup_manifest.json`, `.dry-run-complete` | Only stage that mutates the library. |
+| 5 execute | `approved_plan.json` | `.dry-run-complete`, `dry_run_log.json`, `journal.<run_id>.jsonl`, `backup_manifest.<run_id>.json`, `acknowledged.<run_id>.json` | Only stage that mutates the library. |
 
 Key decision points, all in `stage3_plan.py` unless noted:
 
@@ -51,7 +51,19 @@ Key decision points, all in `stage3_plan.py` unless noted:
 
 ## Stage 5 Safety Gates
 
-`--apply` refuses to run unless `data/.dry-run-complete` exists, and it always writes `backup_manifest.json` (original tags + paths) before touching a file. `--rollback` replays that manifest. Do not weaken or skip these checks, and never delete the marker or manifest to "clean up" — they are the only undo path. The marker is not invalidated when the plan changes, so re-run `--dry-run` after any edit to `approved_plan.json` before `--apply`.
+`--apply` refuses unless `data/.dry-run-complete` is valid JSON bound to the exact bytes of the
+current `approved_plan.json`. It creates an exclusive append-only journal and a schema-v2,
+run-scoped backup manifest, then consumes the marker before the first library mutation. Re-run
+`--dry-run` after every edit to the plan. Never delete a run-scoped journal or manifest to
+"clean up"; together they are the recovery record.
+
+An interrupted or unresolved run blocks every later apply. Recover it with
+`--rollback --run-id <id>` (optionally add `--dry-run` for a write-free preview). Rollback uses
+file identity and observation of tags and paths; an uncertain interrupted save is left as
+`manual_review`, not guessed at. `--acknowledge-run <id> --note "<why>"` closes a run without
+recovery and freezes it against later rollback, so it also requires explicit human approval.
+The legacy `backup_manifest.json` and `execution_log.json` are immutable evidence: hardened
+Stage 5 never writes them and refuses to replay the legacy manifest.
 
 ## Coding Style & Naming Conventions
 
