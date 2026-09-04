@@ -431,7 +431,8 @@ def execute_apply(manifest: dict, journal: JournalWriter) -> int:
             except (OSError, IdentityUnavailable):
                 unchanged = False
             if not unchanged:
-                journal.append(_result_event(entry_id, "changed_since_preflight", path))
+                outcome = "rename_failed" if keys else "changed_since_preflight"
+                journal.append(_result_event(entry_id, outcome, path))
                 unresolved += 1
                 continue
             journal.append({"event": "intent", "mode": "apply", "entry_id": entry_id, "phase": "rename", "size_before": os.path.getsize(path), "tmp_path": entry["tmp_path"]})
@@ -566,7 +567,7 @@ def _uncertain(path: str, keys: list[str], before: dict, after: dict, size_befor
 
 def _decision(entry: dict, apply_event: dict | None, rollback_event: dict | None, path: str) -> tuple[str, bool, bool]:
     keys = entry["written_keys"]
-    if apply_event is None or (apply_event.get("event") == "result" and apply_event.get("outcome") in ("skipped", "changed_since_preflight")):
+    if _apply_not_started(apply_event):
         return "not_started", False, False
     if keys and ((apply_event.get("event") == "intent" and apply_event.get("phase") == "tags") or (apply_event.get("event") == "result" and apply_event.get("outcome") == "tag_failed")):
         state = _uncertain(path, keys, entry["original_tags"], entry["written_values"], apply_event.get("size_before"))
@@ -595,14 +596,29 @@ def _decision(entry: dict, apply_event: dict | None, rollback_event: dict | None
     return "restore", needs_tags, os.path.basename(path) != entry["original_filename"]
 
 
+def _apply_not_started(apply_event: dict | None) -> bool:
+    """Return whether the journal proves apply performed no mutation."""
+    return apply_event is None or (
+        apply_event.get("event") == "result"
+        and apply_event.get("outcome") in ("skipped", "changed_since_preflight")
+    )
+
+
 def _rollback_preflight(manifest: dict, events: list[dict]) -> list[Issue]:
     issues, targets = [], {}
     apply_latest, rollback_latest = _latest(events, "apply"), _latest(events, "rollback")
     for entry_id, entry in enumerate(manifest["entries"]):
-        path, resolution = _resolve(entry, rollback_latest.get(entry_id) or apply_latest.get(entry_id))
+        apply_event = apply_latest.get(entry_id)
+        if _apply_not_started(apply_event):
+            continue
+        path, resolution = _resolve(
+            entry, rollback_latest.get(entry_id) or apply_event
+        )
         if resolution != "resolved" or not path:
             continue
-        outcome, _, rename = _decision(entry, apply_latest.get(entry_id), rollback_latest.get(entry_id), path)
+        outcome, _, rename = _decision(
+            entry, apply_event, rollback_latest.get(entry_id), path
+        )
         if outcome != "restore" or not rename:
             continue
         target = os.path.join(os.path.dirname(path), entry["original_filename"])
@@ -637,13 +653,20 @@ def execute_rollback(manifest: dict, events: list[dict], journal: JournalWriter 
     if journal:
         journal.append({"event": "rollback_start"})
     for entry_id, entry in enumerate(manifest["entries"]):
-        path, resolution = _resolve(entry, rollback_latest.get(entry_id) or apply_latest.get(entry_id))
-        if apply_latest.get(entry_id) is None:
+        apply_event = apply_latest.get(entry_id)
+        if _apply_not_started(apply_event):
+            path = None
             outcome, needs_tags, needs_rename = "not_started", False, False
-        elif resolution != "resolved" or not path:
-            outcome, needs_tags, needs_rename = resolution, False, False
         else:
-            outcome, needs_tags, needs_rename = _decision(entry, apply_latest.get(entry_id), rollback_latest.get(entry_id), path)
+            path, resolution = _resolve(
+                entry, rollback_latest.get(entry_id) or apply_event
+            )
+            if resolution != "resolved" or not path:
+                outcome, needs_tags, needs_rename = resolution, False, False
+            else:
+                outcome, needs_tags, needs_rename = _decision(
+                    entry, apply_event, rollback_latest.get(entry_id), path
+                )
         item = {"entry_id": entry_id, "path": path, "verdict": outcome, "set": {}, "delete": [], "rename_to": None}
         if outcome == "restore" and path:
             original = entry["original_tags"]

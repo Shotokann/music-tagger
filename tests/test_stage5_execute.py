@@ -199,12 +199,92 @@ def test_changed_since_preflight_is_journaled_and_rename_skipped(tmp_path, monke
     assert source.exists() and not (music / "renamed.mp3").exists()
 
 
+def test_post_saved_identity_failure_is_rename_failed_and_rollback_restores(
+    tmp_path, monkeypatch
+):
+    music, data = configure_roots(tmp_path, monkeypatch)
+    source = make_mp3(music / "old.mp3", title="Old")
+    write_plan(data, [change_for(source, rename="new.mp3")])
+    monkeypatch.setattr(stage5, "make_run_id", lambda digest: RUN_ID)
+    assert invoke("--dry-run") == 0
+    real_identity = stage5.file_identity
+    real_append = stage5.JournalWriter.append
+    state = {"saved": False, "fired": False}
+
+    def watch_saved(self, event):
+        real_append(self, event)
+        if event["event"] == "saved" and event.get("mode") == "apply":
+            state["saved"] = True
+
+    def transient_identity_failure(path):
+        if state["saved"] and not state["fired"]:
+            state["fired"] = True
+            raise OSError("transient OneDrive lock")
+        return real_identity(path)
+
+    monkeypatch.setattr(stage5.JournalWriter, "append", watch_saved)
+    monkeypatch.setattr(stage5, "file_identity", transient_identity_failure)
+    assert invoke("--apply") == 2
+    monkeypatch.setattr(stage5.JournalWriter, "append", real_append)
+    monkeypatch.setattr(stage5, "file_identity", real_identity)
+
+    apply_results = [
+        event for event in journal_events(data, RUN_ID)
+        if event["event"] == "result" and event.get("mode") == "apply"
+    ]
+    assert apply_results[-1]["outcome"] == "rename_failed"
+    assert source.exists() and read_tags(str(source))["title"] == "New"
+    assert invoke("--rollback", "--run-id", RUN_ID) == 0
+    assert read_tags(str(source))["title"] == "Old"
+    assert stage5.run_state(RUN_ID) == "closed"
+
+
+def test_replaced_changed_since_preflight_rolls_back_as_not_started(
+    tmp_path, monkeypatch
+):
+    music, data = configure_roots(tmp_path, monkeypatch)
+    source = make_mp3(music / "song.mp3", title="Old")
+    write_plan(data, [change_for(source)])
+    monkeypatch.setattr(stage5, "make_run_id", lambda digest: RUN_ID)
+    assert invoke("--dry-run") == 0
+    real_create = stage5.create_backup_manifest
+
+    def replace_after_manifest(*args, **kwargs):
+        manifest = real_create(*args, **kwargs)
+        replacement = make_mp3(music / "replacement.mp3", title="Old")
+        os.replace(replacement, source)
+        return manifest
+
+    monkeypatch.setattr(stage5, "create_backup_manifest", replace_after_manifest)
+    assert invoke("--apply") == 2
+    assert invoke("--rollback", "--run-id", RUN_ID) == 0
+    rollback_results = [
+        event for event in journal_events(data, RUN_ID)
+        if event["event"] == "result" and event.get("mode") == "rollback"
+    ]
+    assert rollback_results[-1]["outcome"] == "not_started"
+    assert stage5.run_state(RUN_ID) == "closed"
+
+
 def test_empty_and_journal_only_runs_close_without_manifest(tmp_path, monkeypatch):
     _, data = configure_roots(tmp_path, monkeypatch)
     empty = data / f"journal.{RUN_ID}.jsonl"
     empty.write_bytes(b"")
     assert invoke("--rollback", "--run-id", RUN_ID) == 0
     assert journal_events(data, RUN_ID)[-1]["event"] == "rollback_end"
+
+
+def test_rollback_without_run_id_lists_available_run_state(
+    tmp_path, monkeypatch, capsys
+):
+    _, data = configure_roots(tmp_path, monkeypatch)
+    (data / f"journal.{RUN_ID}.jsonl").write_text(
+        '{"event":"run_start"}\n', encoding="utf-8"
+    )
+    assert invoke("--rollback") == 1
+    output = capsys.readouterr().out
+    assert RUN_ID in output
+    assert "open" in output
 
 
 def test_truncated_tail_tolerated_but_malformed_interior_is_corrupt(tmp_path):
@@ -687,6 +767,48 @@ def test_rename_failure_keeps_verified_tags_for_rollback(tmp_path, monkeypatch):
     assert read_tags(str(source))["title"] == "Old"
 
 
+def test_keyboard_interrupt_from_case_rename_is_recorded_as_rename_failed(
+    tmp_path, monkeypatch
+):
+    music, data = configure_roots(tmp_path, monkeypatch)
+    source = make_mp3(music / "Song.MP3", title="Old")
+    write_plan(data, [change_for(source, title=None, rename="Song.mp3")])
+    monkeypatch.setattr(stage5, "make_run_id", lambda digest: RUN_ID)
+    assert invoke("--dry-run") == 0
+
+    def restored_then_interrupted(src, dst, run_id):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(stage5, "rename_exact", restored_then_interrupted)
+    assert invoke("--apply") == 2
+    results = [
+        event for event in journal_events(data, RUN_ID)
+        if event["event"] == "result" and event.get("mode") == "apply"
+    ]
+    assert results[-1]["outcome"] == "rename_failed"
+    assert os.listdir(music) == [source.name]
+
+
+def test_tag_failed_after_state_is_restored(tmp_path, monkeypatch):
+    music, data = configure_roots(tmp_path, monkeypatch)
+    source = make_mp3(music / "song.mp3", title="Old")
+    write_plan(data, [change_for(source)])
+    monkeypatch.setattr(stage5, "make_run_id", lambda digest: RUN_ID)
+    assert invoke("--dry-run") == 0
+    real_apply = stage5.apply_tags
+
+    def save_then_raise(path, values, deletes):
+        real_apply(path, values, deletes)
+        raise OSError("failure after save")
+
+    monkeypatch.setattr(stage5, "apply_tags", save_then_raise)
+    assert invoke("--apply") == 2
+    assert read_tags(str(source))["title"] == "New"
+    monkeypatch.setattr(stage5, "apply_tags", real_apply)
+    assert invoke("--rollback", "--run-id", RUN_ID) == 0
+    assert read_tags(str(source))["title"] == "Old"
+
+
 def test_multitrack_directory_identity_resolution_ignores_cover_file(tmp_path, monkeypatch):
     music, data = configure_roots(tmp_path, monkeypatch)
     album = music / "album"
@@ -860,16 +982,20 @@ def test_post_write_verification_failure_is_tag_failed(tmp_path, monkeypatch, fa
     assert invoke("--dry-run") == 0
     if failure == "reread":
         real_read = stage5.read_tags
-        calls = 0
+        real_apply = stage5.apply_tags
+        state = {"write_returned": False}
+
+        def mark_write_returned(path, values, deletes):
+            real_apply(path, values, deletes)
+            state["write_returned"] = True
 
         def mismatched_after_write(path):
-            nonlocal calls
-            calls += 1
             result = real_read(path)
-            if calls >= 4:
+            if state["write_returned"]:
                 result["title"] = "Mismatch"
             return result
 
+        monkeypatch.setattr(stage5, "apply_tags", mark_write_returned)
         monkeypatch.setattr(stage5, "read_tags", mismatched_after_write)
     else:
         monkeypatch.setattr(stage5, "verify_container", lambda path: False)
