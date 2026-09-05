@@ -30,8 +30,25 @@ python -m pipeline.stage5_execute --dry-run
 ```
 
 Review `data/validation_report.txt`, `approved_plan.json`, and the dry-run output.
-Stage 5 mutates the library only with `--apply`, and refuses to do so until a dry run has
-created `.dry-run-complete`. It writes `backup_manifest.json` before changing files;
-`--rollback` must be used only with a verified manifest. Because the marker is not invalidated
-when the plan changes, run `--dry-run` again after every manual approval edit and before every
-`--apply`.
+Stage 5 mutates the library only with `--apply`. A successful dry run binds
+`.dry-run-complete` to the exact bytes of `approved_plan.json`; `--apply` refuses a changed or
+legacy marker and consumes a valid marker before its first mutation.
+
+Each apply has a printed run ID and writes `journal.<run_id>.jsonl` plus
+`backup_manifest.<run_id>.json`. To preview or perform recovery, use the exact ID:
+
+```powershell
+python -m pipeline.stage5_execute --rollback --run-id <run_id> --dry-run
+python -m pipeline.stage5_execute --rollback --run-id <run_id>
+```
+
+An interrupted or unresolved run blocks later applies until rollback finishes cleanly. If a
+human investigation decides that a run must not be rolled back, freeze it explicitly:
+
+```powershell
+python -m pipeline.stage5_execute --acknowledge-run <run_id> --note "reason"
+```
+
+Acknowledgement is not recovery: it permanently disables rollback through Stage 5 for that
+run. Legacy `backup_manifest.json` and `execution_log.json` are preserved as evidence and are
+never overwritten by the hardened executor.
