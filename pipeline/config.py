@@ -93,7 +93,7 @@ ACOUSTID_RATE_LIMIT = 0.35  # seconds between AcoustID calls
 # ── File Extensions ────────────────────────────────────────────────────────────
 
 SUPPORTED_EXTENSIONS = {".mp3", ".m4a", ".m4p", ".wav", ".flac", ".ogg", ".wma"}
-WRITABLE_EXTENSIONS = {".mp3", ".m4a", ".wav", ".flac"}  # excludes DRM
+WRITABLE_EXTENSIONS = {".mp3", ".m4a"}  # formats with implemented writers; excludes DRM
 FINGERPRINTABLE_EXTENSIONS = {".mp3", ".m4a", ".wav", ".flac", ".ogg"}
 
 # ── Matching Thresholds ───────────────────────────────────────────────────────
